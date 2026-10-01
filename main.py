@@ -1,5 +1,6 @@
 import io
 import os
+import tempfile
 from typing import Dict, Any
 
 import requests
@@ -118,6 +119,8 @@ def ai_score_from_sightengine(
 
 def ai_score_from_huggingface(
     image_bytes: bytes,
+    filename: str,
+    content_type: str,
 ) -> Dict[str, Any]:
     """
     Second independent detector using Hugging Face Inference.
@@ -128,8 +131,9 @@ def ai_score_from_huggingface(
     Model:
       dima806/ai_vs_real_image_detection
 
-    The model returns class probabilities for REAL vs FAKE/AI.
-    We normalize those labels into one 0..1 AI probability.
+    Some HF routes cannot infer a MIME type when anonymous raw bytes are
+    sent. Write the uploaded image to a temporary file with the proper
+    extension, pass that path to InferenceClient, then delete it.
     """
     token = os.getenv("HF_TOKEN")
 
@@ -144,15 +148,45 @@ def ai_score_from_huggingface(
         api_key=token,
     )
 
+    content_type = (content_type or "").lower()
+    if content_type == "image/png":
+        suffix = ".png"
+    elif content_type == "image/webp":
+        suffix = ".webp"
+    elif content_type in ("image/jpeg", "image/jpg"):
+        suffix = ".jpg"
+    else:
+        original_suffix = Path(filename or "").suffix.lower()
+        if original_suffix in {".png", ".jpg", ".jpeg", ".webp"}:
+            suffix = original_suffix
+        else:
+            suffix = ".jpg"
+
+    temp_path = None
+
     try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            suffix=suffix,
+            delete=False,
+        ) as temp_file:
+            temp_file.write(image_bytes)
+            temp_path = temp_file.name
+
         output = client.image_classification(
-            image_bytes,
+            temp_path,
             model="dima806/ai_vs_real_image_detection",
         )
     except Exception as exc:
         raise RuntimeError(
             f"Hugging Face detector failed: {exc}"
         ) from exc
+    finally:
+        if temp_path:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
 
     ai_probability = None
     real_probability = None
@@ -179,7 +213,7 @@ def ai_score_from_huggingface(
 
     if ai_probability is None:
         raise RuntimeError(
-            f"Hugging Face detector returned labels that could not be mapped: "
+            "Hugging Face detector returned labels that could not be mapped: "
             f"{list(raw_scores.keys())}"
         )
 
@@ -249,6 +283,8 @@ async def analyze(file: UploadFile = File(...)):
         )
         huggingface = ai_score_from_huggingface(
             image_bytes,
+            file.filename or "upload.jpg",
+            content_type,
         )
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))

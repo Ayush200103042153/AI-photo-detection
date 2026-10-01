@@ -247,3 +247,22 @@ Create the Hugging Face token in your Hugging Face account settings. The token
 needs permission to use Inference Providers.
 
 Do not commit HF_TOKEN to GitHub.
+
+
+## V5.3 — Hugging Face content-type fix
+
+Fixes:
+
+```text
+Bad request: No content type provided and no default one configured
+```
+
+The backend now writes each upload to a temporary image file with the correct
+extension before calling Hugging Face, then deletes the temporary file after
+the request. No new Render variables are required. Keep:
+
+```text
+SIGHTENGINE_API_USER
+SIGHTENGINE_API_SECRET
+HF_TOKEN
+```
