@@ -128,3 +128,26 @@ Keep it only in environment variables.
 
 If these credentials are missing, the site now shows a configuration error instead
 of returning a made-up 50% score.
+
+
+## V4 — precise score display
+
+This version removes whole-number rounding from both the Python backend and the
+JavaScript frontend.
+
+Examples:
+
+- detector returns `0.001` -> displays `0.1%`
+- detector returns `0.184` -> displays `18.4%`
+- detector returns `0.437` -> displays `43.7%`
+- detector returns `0.726` -> displays `72.6%`
+- detector returns `0.994` -> displays `99.4%`
+
+Threshold decisions now use the raw probability:
+
+- `< 0.40` -> `Image is legit`
+- `>= 0.40 and < 1.0` -> `Might be AI generated`
+- `1.0` -> `AI generated`
+
+This does not invent intermediate scores. If the detector itself returns a value
+near 0 or 1, the site truthfully displays that precise value.

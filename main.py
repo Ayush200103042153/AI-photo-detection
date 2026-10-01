@@ -141,19 +141,17 @@ def web_similar_images(image_bytes: bytes, filename: str) -> List[Dict[str, str]
 
 def verdict_for(prob: float) -> str:
     """
-    Requested display thresholds, based on the detector's returned score:
-      100%    -> AI generated
-      40-99%  -> Might be AI generated
-      0-39%   -> Image is legit
+    Thresholds use the detector's RAW probability, not a rounded percentage:
+      exactly 1.0      -> AI generated
+      0.40 to < 1.0   -> Might be AI generated
+      below 0.40      -> Image is legit
 
     The percentage is a detector confidence score, not mathematical proof.
     """
-    pct = round(prob * 100)
-
-    if pct >= 100:
+    if prob >= 1.0:
         return "AI generated"
 
-    if pct >= 40:
+    if prob >= 0.40:
         return "Might be AI generated"
 
     return "Image is legit"
@@ -198,21 +196,23 @@ async def analyze(file: UploadFile = File(...)):
     if web_search_ran:
         matches = web_similar_images(image_bytes, file.filename or "upload")
 
-    pct = round(probability * 100)
+    # Preserve the detector's real score. Round only for display.
+    pct = probability * 100.0
+    display_pct = f"{pct:.1f}%"
 
-    if pct >= 100:
+    if probability >= 1.0:
         explanation = (
-            "AI detector score: 100%. The detector returned its maximum "
+            f"AI detector score: {display_pct}. The detector returned its maximum "
             "AI-generation confidence."
         )
-    elif pct >= 40:
+    elif probability >= 0.40:
         explanation = (
-            f"AI detector score: {pct}%. The image is above the 40% threshold, "
-            "so it is flagged as possibly AI generated."
+            f"AI detector score: {display_pct}. The image is at or above the 40% "
+            "threshold, so it is flagged as possibly AI generated."
         )
     else:
         explanation = (
-            f"AI detector score: {pct}%. The image is below the 40% threshold, "
+            f"AI detector score: {display_pct}. The image is below the 40% threshold, "
             "so this site labels it as legit."
         )
 
@@ -223,12 +223,13 @@ async def analyze(file: UploadFile = File(...)):
         pretty_name = likely_generator.replace("_", " ").title()
         explanation += (
             f" Strongest generator signal: {pretty_name} "
-            f"({round(likely_generator_score * 100)}%)."
+            f"({likely_generator_score * 100:.1f}%)."
         )
 
     return {
         "verdict": verdict_for(probability),
         "ai_probability": probability,
+        "ai_percentage": round(probability * 100.0, 3),
         "explanation": explanation,
         "detector_source": detector.get("source"),
         "similar_images": matches[:12],

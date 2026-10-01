@@ -140,9 +140,16 @@ analyzeBtn.addEventListener("click", async () => {
 });
 
 function renderResult(data) {
-  const pct = Math.round((data.ai_probability || 0) * 100);
-  document.querySelector("#scoreText").textContent = `${pct}%`;
-  document.querySelector("#confidenceText").textContent = `${pct}%`;
+  // Show the detector's actual score instead of rounding to a whole number.
+  const rawPct = Number.isFinite(Number(data.ai_percentage))
+    ? Number(data.ai_percentage)
+    : Number(data.ai_probability || 0) * 100;
+
+  const pct = Math.max(0, Math.min(100, rawPct));
+  const displayPct = `${pct.toFixed(1)}%`;
+
+  document.querySelector("#scoreText").textContent = displayPct;
+  document.querySelector("#confidenceText").textContent = displayPct;
   document.querySelector("#verdictText").textContent = data.verdict;
   document.querySelector("#reasonText").textContent = data.explanation;
   document.querySelector("#scoreRing").style.background =
