@@ -30,8 +30,8 @@
       <div class="eyebrow">AI IMAGE ANALYSIS</div>
       <h1>Is this image<br><span>AI-generated?</span></h1>
       <p class="sub">
-        Upload one image. We analyze visual signals locally on the server and, when configured,
-        search the open web for visually similar images.
+        Upload one image. Two independent AI-image detectors analyze it and
+        combine their confidence into one AI-likelihood score.
       </p>
 
       <div class="panel upload-panel">
@@ -105,20 +105,6 @@
           <span class="label">Submitted image</span>
           <img id="resultPreview" alt="Submitted image" />
         </div>
-      </div>
-
-      <div class="panel matches-card">
-        <div class="section-head">
-          <div>
-            <span class="label">Open web</span>
-            <h3>Possible similar images</h3>
-          </div>
-          <span id="searchStatus" class="pill">Checking…</span>
-        </div>
-        <div id="matchesGrid" class="matches-grid"></div>
-        <p id="noMatches" class="empty-note hidden">
-          No reliable visually similar public-web matches were returned by the configured search provider.
-        </p>
       </div>
 
       <button id="scanAnotherBtn" class="primary-btn bottom-cta" type="button">

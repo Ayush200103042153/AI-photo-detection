@@ -151,3 +151,58 @@ Threshold decisions now use the raw probability:
 
 This does not invent intermediate scores. If the detector itself returns a value
 near 0 or 1, the site truthfully displays that precise value.
+
+
+## V5 — two-detector ensemble
+
+V5 changes the detection method itself.
+
+Instead of relying on one detector that often returns values near 0% or 100%,
+the backend now runs two independent detectors:
+
+1. Sightengine
+2. IsItAI
+
+Both results are converted to the same AI-probability scale and averaged:
+
+```python
+combined_probability = (
+    sightengine_probability + isitai_probability
+) / 2
+```
+
+This does not fake middle percentages. Middle values occur naturally when the
+two models have different confidence or disagree.
+
+Examples:
+
+- Sightengine 0.1% + IsItAI 62.0% -> combined 31.1%
+- Sightengine 99.4% + IsItAI 54.0% -> combined 76.7%
+- Sightengine 7.0% + IsItAI 89.0% -> combined 48.0%
+
+If both models strongly agree, the result can still correctly be near 0% or 100%.
+
+### Required Render environment variables
+
+Keep the existing:
+
+```text
+SIGHTENGINE_API_USER
+SIGHTENGINE_API_SECRET
+```
+
+Add:
+
+```text
+ISITAI_EMAIL
+ISITAI_API_SECRET
+```
+
+Use the email associated with your IsItAI account and the API secret from the
+IsItAI API Keys page.
+
+The open-web / similar-images feature has been completely removed from the UI
+and backend in V5.
+
+Because IsItAI documents a 5 MB file-upload limit, V5 uses a 5 MB maximum image
+size so both detectors receive the same uploaded image.

@@ -1,6 +1,6 @@
 import io
 import os
-from typing import List, Dict, Any
+from typing import Dict, Any
 
 import requests
 from PIL import Image
@@ -12,7 +12,7 @@ app = FastAPI(title="Orbital Verify")
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-MAX_BYTES = 12 * 1024 * 1024
+MAX_BYTES = 5 * 1024 * 1024
 
 @app.get("/", response_class=HTMLResponse)
 def home():
@@ -113,31 +113,145 @@ def ai_score_from_sightengine(
         "likely_generator_score": likely_generator_score,
     }
 
-def web_similar_images(image_bytes: bytes, filename: str) -> List[Dict[str, str]]:
+
+
+def ai_score_from_isitai(
+    image_bytes: bytes,
+    filename: str,
+    content_type: str
+) -> Dict[str, Any]:
     """
-    Optional reverse/similar-image search hook.
+    Second independent AI-image detector.
 
-    This starter project leaves the provider pluggable because 'search the whole
-    internet' is not realistically possible from a normal app, and providers have
-    different contracts.
+    Required environment variables:
+      ISITAI_EMAIL=...
+      ISITAI_API_SECRET=...
 
-    Recommended production options:
-    - Google Cloud Vision Web Detection
-    - TinEye API
-    - a licensed visual-search provider
+    IsItAI returns:
+      predicted_label: "AI" or "Human"
+      probability: confidence in that predicted label
 
-    Implement one provider here and return:
-    [
-      {
-        "title": "...",
-        "thumbnail": "https://...",
-        "image_url": "https://...",
-        "source_url": "https://...",
-        "source": "..."
-      }
-    ]
+    We convert that to the same 0..1 AI-probability scale as Sightengine:
+      AI, 0.80 confidence    -> 0.80 AI probability
+      Human, 0.80 confidence -> 0.20 AI probability
     """
-    return []
+    email = os.getenv("ISITAI_EMAIL")
+    api_secret = os.getenv("ISITAI_API_SECRET")
+
+    if not email or not api_secret:
+        raise RuntimeError(
+            "Second AI detector is not configured. Add ISITAI_EMAIL and "
+            "ISITAI_API_SECRET to your environment variables."
+        )
+
+    try:
+        auth_response = requests.post(
+            "https://api.isitai.com/login",
+            data={
+                "email": email,
+                "password": api_secret,
+            },
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(
+            f"Second detector authentication failed: {exc}"
+        ) from exc
+
+    try:
+        auth_output = auth_response.json()
+    except ValueError as exc:
+        raise RuntimeError(
+            "Second detector authentication returned an invalid response."
+        ) from exc
+
+    token = auth_output.get("access_token")
+    if not auth_response.ok or not token:
+        detail = auth_output.get("detail") or auth_output.get("message")
+        raise RuntimeError(
+            f"Second detector authentication error: "
+            f"{detail or f'HTTP {auth_response.status_code}'}"
+        )
+
+    files = {
+        "file": (
+            filename or "upload.jpg",
+            image_bytes,
+            content_type or "application/octet-stream",
+        )
+    }
+
+    try:
+        response = requests.post(
+            "https://api.isitai.com/detect-img",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "accept": "application/json",
+            },
+            files=files,
+            timeout=45,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(
+            f"Second AI detector connection failed: {exc}"
+        ) from exc
+
+    try:
+        output = response.json()
+    except ValueError as exc:
+        raise RuntimeError(
+            "Second AI detector returned an invalid response."
+        ) from exc
+
+    if not response.ok:
+        detail = output.get("detail") or output.get("message")
+        raise RuntimeError(
+            f"Second AI detector error: "
+            f"{detail or f'HTTP {response.status_code}'}"
+        )
+
+    label = str(output.get("predicted_label", "")).strip().lower()
+
+    try:
+        label_confidence = float(output["probability"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "Second AI detector response did not contain a probability score."
+        ) from exc
+
+    label_confidence = min(max(label_confidence, 0.0), 1.0)
+
+    if label == "ai":
+        ai_probability = label_confidence
+    elif label == "human":
+        ai_probability = 1.0 - label_confidence
+    else:
+        raise RuntimeError(
+            f"Second AI detector returned an unknown label: {label or 'empty'}"
+        )
+
+    return {
+        "probability": ai_probability,
+        "source": "IsItAI",
+        "predicted_label": output.get("predicted_label"),
+        "label_confidence": label_confidence,
+        "potential_method": output.get("potential_method"),
+        "method_probability": output.get("method_probability"),
+    }
+
+
+def combine_detector_scores(
+    sightengine_probability: float,
+    isitai_probability: float,
+) -> float:
+    """
+    Equal-weight ensemble.
+
+    We do NOT remap 0.1% to an invented middle value. The middle scores come
+    naturally when two independent models disagree or have different confidence.
+    """
+    combined = (sightengine_probability + isitai_probability) / 2.0
+    return min(max(combined, 0.0), 1.0)
 
 def verdict_for(prob: float) -> str:
     """
@@ -168,7 +282,7 @@ async def analyze(file: UploadFile = File(...)):
 
     image_bytes = await file.read()
     if len(image_bytes) > MAX_BYTES:
-        raise HTTPException(status_code=413, detail="Image exceeds the 12 MB limit.")
+        raise HTTPException(status_code=413, detail="Image exceeds the 5 MB limit.")
 
     try:
         Image.open(io.BytesIO(image_bytes)).verify()
@@ -176,7 +290,12 @@ async def analyze(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="The uploaded file is not a valid image.")
 
     try:
-        detector = ai_score_from_sightengine(
+        sightengine = ai_score_from_sightengine(
+            image_bytes,
+            file.filename or "upload.jpg",
+            content_type,
+        )
+        isitai = ai_score_from_isitai(
             image_bytes,
             file.filename or "upload.jpg",
             content_type,
@@ -184,46 +303,77 @@ async def analyze(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
-    probability = float(detector["probability"])
+    sightengine_probability = float(sightengine["probability"])
+    isitai_probability = float(isitai["probability"])
 
-    # The starter web_similar_images() function is only a placeholder until you
-    # connect a real reverse-image / web-visual-search provider.
-    #
-    # Set WEB_IMAGE_SEARCH_ENABLED=true only after implementing that provider.
-    web_search_ran = os.getenv("WEB_IMAGE_SEARCH_ENABLED", "false").lower() == "true"
+    probability = combine_detector_scores(
+        sightengine_probability,
+        isitai_probability,
+    )
 
-    matches = []
-    if web_search_ran:
-        matches = web_similar_images(image_bytes, file.filename or "upload")
-
-    # Preserve the detector's real score. Round only for display.
     pct = probability * 100.0
-    display_pct = f"{pct:.1f}%"
+    sightengine_pct = sightengine_probability * 100.0
+    isitai_pct = isitai_probability * 100.0
+    disagreement = abs(sightengine_probability - isitai_probability)
 
     if probability >= 1.0:
         explanation = (
-            f"AI detector score: {display_pct}. The detector returned its maximum "
-            "AI-generation confidence."
+            f"Combined AI score: {pct:.1f}%. Both detection signals produced "
+            "maximum AI confidence."
         )
     elif probability >= 0.40:
         explanation = (
-            f"AI detector score: {display_pct}. The image is at or above the 40% "
-            "threshold, so it is flagged as possibly AI generated."
+            f"Combined AI score: {pct:.1f}%. This is the average of two "
+            "independent AI-image detectors, so the score can represent "
+            "uncertain and in-between cases instead of forcing a binary answer."
         )
     else:
         explanation = (
-            f"AI detector score: {display_pct}. The image is below the 40% threshold, "
-            "so this site labels it as legit."
+            f"Combined AI score: {pct:.1f}%. The combined result is below the "
+            "40% threshold, so this site labels the image as legit."
         )
 
-    likely_generator = detector.get("likely_generator")
-    likely_generator_score = float(detector.get("likely_generator_score") or 0)
+    explanation += (
+        f" Detector signals: Sightengine {sightengine_pct:.1f}% AI, "
+        f"IsItAI {isitai_pct:.1f}% AI."
+    )
+
+    if disagreement >= 0.40:
+        explanation += (
+            " The detectors disagree strongly on this image, so this result "
+            "should be treated as uncertain."
+        )
+
+    likely_generator = sightengine.get("likely_generator")
+    likely_generator_score = float(
+        sightengine.get("likely_generator_score") or 0
+    )
+
+    potential_method = isitai.get("potential_method")
+    try:
+        potential_method_score = float(
+            isitai.get("method_probability") or 0
+        )
+    except (TypeError, ValueError):
+        potential_method_score = 0.0
+
+    generator_notes = []
 
     if likely_generator and likely_generator_score >= 0.40:
-        pretty_name = likely_generator.replace("_", " ").title()
+        generator_notes.append(
+            f"{likely_generator.replace('_', ' ').title()} "
+            f"{likely_generator_score * 100:.1f}%"
+        )
+
+    if potential_method and potential_method_score >= 0.40:
+        generator_notes.append(
+            f"{str(potential_method).replace('_', ' ').title()} "
+            f"{potential_method_score * 100:.1f}%"
+        )
+
+    if generator_notes:
         explanation += (
-            f" Strongest generator signal: {pretty_name} "
-            f"({likely_generator_score * 100:.1f}%)."
+            " Possible generator signals: " + ", ".join(generator_notes) + "."
         )
 
     return {
@@ -231,8 +381,13 @@ async def analyze(file: UploadFile = File(...)):
         "ai_probability": probability,
         "ai_percentage": round(probability * 100.0, 3),
         "explanation": explanation,
-        "detector_source": detector.get("source"),
-        "similar_images": matches[:12],
-        "web_search_enabled": web_search_ran,
-        "stores_upload": False
+        "detectors": {
+            "sightengine_ai_percentage": round(
+                sightengine_probability * 100.0, 3
+            ),
+            "isitai_ai_percentage": round(
+                isitai_probability * 100.0, 3
+            ),
+        },
+        "stores_upload": False,
     }

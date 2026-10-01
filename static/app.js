@@ -13,9 +13,6 @@ const resultView = document.querySelector("#resultView");
 const toast = document.querySelector("#toast");
 const progressBar = document.querySelector("#progressBar");
 const loadingText = document.querySelector("#loadingText");
-const matchesGrid = document.querySelector("#matchesGrid");
-const noMatches = document.querySelector("#noMatches");
-const searchStatus = document.querySelector("#searchStatus");
 
 let selectedFile = null;
 let previewUrl = null;
@@ -43,8 +40,6 @@ function resetApp() {
   fileCard.classList.add("hidden");
   dropzone.classList.remove("hidden");
   analyzeBtn.disabled = true;
-  matchesGrid.innerHTML = "";
-  noMatches.classList.add("hidden");
   resultView.classList.add("hidden");
   loadingView.classList.add("hidden");
   homeView.classList.remove("hidden");
@@ -97,9 +92,9 @@ removeBtn.addEventListener("click", resetApp);
 
 function animateLoading() {
   const phases = [
-    ["Inspecting visual signals…", 26],
-    ["Estimating AI-generation likelihood…", 52],
-    ["Checking public-web similarity provider…", 76],
+    ["Running detector one…", 24],
+    ["Running detector two…", 50],
+    ["Combining confidence signals…", 76],
     ["Preparing result…", 92]
   ];
   phases.forEach(([text, width], i) => {
@@ -155,13 +150,11 @@ function renderResult(data) {
   document.querySelector("#scoreRing").style.background =
     `conic-gradient(#b9c6ff ${pct * 3.6}deg,#1a203b ${pct * 3.6}deg)`;
 
-  matchesGrid.innerHTML = "";
   const matches = data.similar_images || [];
   searchStatus.textContent = data.web_search_enabled ? (matches.length ? `${matches.length} found` : "No matches") : "Not configured";
 
   if (matches.length) {
-    noMatches.classList.add("hidden");
-    matches.forEach(item => {
+      matches.forEach(item => {
       const card = document.createElement("article");
       card.className = "match";
       card.innerHTML = `
