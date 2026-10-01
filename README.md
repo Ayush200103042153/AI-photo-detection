@@ -206,3 +206,16 @@ and backend in V5.
 
 Because IsItAI documents a 5 MB file-upload limit, V5 uses a 5 MB maximum image
 size so both detectors receive the same uploaded image.
+
+
+## V5.1 — IsItAI authentication compatibility fix
+
+This update fixes the `value is not a valid dict` authentication error by trying
+both JSON and form-encoded login bodies automatically.
+
+No environment variable names changed:
+
+- SIGHTENGINE_API_USER
+- SIGHTENGINE_API_SECRET
+- ISITAI_EMAIL
+- ISITAI_API_SECRET

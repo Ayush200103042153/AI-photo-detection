@@ -144,33 +144,68 @@ def ai_score_from_isitai(
             "ISITAI_API_SECRET to your environment variables."
         )
 
-    try:
-        auth_response = requests.post(
-            "https://api.isitai.com/login",
-            data={
-                "email": email,
-                "password": api_secret,
-            },
-            timeout=30,
-        )
-    except requests.RequestException as exc:
-        raise RuntimeError(
-            f"Second detector authentication failed: {exc}"
-        ) from exc
+    login_payload = {
+        "email": email,
+        "password": api_secret,
+    }
 
-    try:
-        auth_output = auth_response.json()
-    except ValueError as exc:
-        raise RuntimeError(
-            "Second detector authentication returned an invalid response."
-        ) from exc
+    # Try both login-body formats. The public docs show form encoding,
+    # while some live API responses validate the body as a JSON object.
+    auth_attempts = [
+        {
+            "json": login_payload,
+            "headers": {
+                "accept": "application/json",
+                "Content-Type": "application/json",
+            },
+        },
+        {
+            "data": login_payload,
+            "headers": {
+                "accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        },
+    ]
+
+    auth_output = {}
+    auth_errors = []
+
+    for request_kwargs in auth_attempts:
+        try:
+            candidate_response = requests.post(
+                "https://api.isitai.com/login",
+                timeout=30,
+                **request_kwargs,
+            )
+        except requests.RequestException as exc:
+            auth_errors.append(str(exc))
+            continue
+
+        try:
+            candidate_output = candidate_response.json()
+        except ValueError:
+            candidate_output = {}
+
+        candidate_token = candidate_output.get("access_token")
+        if candidate_response.ok and candidate_token:
+            auth_output = candidate_output
+            break
+
+        detail = (
+            candidate_output.get("detail")
+            or candidate_output.get("message")
+            or f"HTTP {candidate_response.status_code}"
+        )
+        auth_errors.append(str(detail))
 
     token = auth_output.get("access_token")
-    if not auth_response.ok or not token:
-        detail = auth_output.get("detail") or auth_output.get("message")
+    if not token:
+        readable_error = auth_errors[-1] if auth_errors else "unknown error"
         raise RuntimeError(
-            f"Second detector authentication error: "
-            f"{detail or f'HTTP {auth_response.status_code}'}"
+            "Second detector authentication failed. "
+            f"IsItAI response: {readable_error}. "
+            "Check ISITAI_EMAIL and ISITAI_API_SECRET in Render."
         )
 
     files = {
