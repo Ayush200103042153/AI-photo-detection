@@ -3,6 +3,7 @@ import os
 from typing import Dict, Any
 
 import requests
+from huggingface_hub import InferenceClient
 from PIL import Image
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import HTMLResponse
@@ -12,7 +13,7 @@ app = FastAPI(title="Orbital Verify")
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-MAX_BYTES = 5 * 1024 * 1024
+MAX_BYTES = 12 * 1024 * 1024
 
 @app.get("/", response_class=HTMLResponse)
 def home():
@@ -115,169 +116,85 @@ def ai_score_from_sightengine(
 
 
 
-def ai_score_from_isitai(
+def ai_score_from_huggingface(
     image_bytes: bytes,
-    filename: str,
-    content_type: str
 ) -> Dict[str, Any]:
     """
-    Second independent AI-image detector.
+    Second independent detector using Hugging Face Inference.
 
-    Required environment variables:
-      ISITAI_EMAIL=...
-      ISITAI_API_SECRET=...
+    Required Render environment variable:
+      HF_TOKEN=hf_...
 
-    IsItAI returns:
-      predicted_label: "AI" or "Human"
-      probability: confidence in that predicted label
+    Model:
+      dima806/ai_vs_real_image_detection
 
-    We convert that to the same 0..1 AI-probability scale as Sightengine:
-      AI, 0.80 confidence    -> 0.80 AI probability
-      Human, 0.80 confidence -> 0.20 AI probability
+    The model returns class probabilities for REAL vs FAKE/AI.
+    We normalize those labels into one 0..1 AI probability.
     """
-    email = os.getenv("ISITAI_EMAIL")
-    api_secret = os.getenv("ISITAI_API_SECRET")
+    token = os.getenv("HF_TOKEN")
 
-    if not email or not api_secret:
-        raise RuntimeError(
-            "Second AI detector is not configured. Add ISITAI_EMAIL and "
-            "ISITAI_API_SECRET to your environment variables."
-        )
-
-    login_payload = {
-        "email": email,
-        "password": api_secret,
-    }
-
-    # Try both login-body formats. The public docs show form encoding,
-    # while some live API responses validate the body as a JSON object.
-    auth_attempts = [
-        {
-            "json": login_payload,
-            "headers": {
-                "accept": "application/json",
-                "Content-Type": "application/json",
-            },
-        },
-        {
-            "data": login_payload,
-            "headers": {
-                "accept": "application/json",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-        },
-    ]
-
-    auth_output = {}
-    auth_errors = []
-
-    for request_kwargs in auth_attempts:
-        try:
-            candidate_response = requests.post(
-                "https://api.isitai.com/login",
-                timeout=30,
-                **request_kwargs,
-            )
-        except requests.RequestException as exc:
-            auth_errors.append(str(exc))
-            continue
-
-        try:
-            candidate_output = candidate_response.json()
-        except ValueError:
-            candidate_output = {}
-
-        candidate_token = candidate_output.get("access_token")
-        if candidate_response.ok and candidate_token:
-            auth_output = candidate_output
-            break
-
-        detail = (
-            candidate_output.get("detail")
-            or candidate_output.get("message")
-            or f"HTTP {candidate_response.status_code}"
-        )
-        auth_errors.append(str(detail))
-
-    token = auth_output.get("access_token")
     if not token:
-        readable_error = auth_errors[-1] if auth_errors else "unknown error"
         raise RuntimeError(
-            "Second detector authentication failed. "
-            f"IsItAI response: {readable_error}. "
-            "Check ISITAI_EMAIL and ISITAI_API_SECRET in Render."
+            "Second AI detector is not configured. Add HF_TOKEN "
+            "to your Render environment variables."
         )
 
-    files = {
-        "file": (
-            filename or "upload.jpg",
+    client = InferenceClient(
+        provider="hf-inference",
+        api_key=token,
+    )
+
+    try:
+        output = client.image_classification(
             image_bytes,
-            content_type or "application/octet-stream",
+            model="dima806/ai_vs_real_image_detection",
         )
-    }
-
-    try:
-        response = requests.post(
-            "https://api.isitai.com/detect-img",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "accept": "application/json",
-            },
-            files=files,
-            timeout=45,
-        )
-    except requests.RequestException as exc:
+    except Exception as exc:
         raise RuntimeError(
-            f"Second AI detector connection failed: {exc}"
+            f"Hugging Face detector failed: {exc}"
         ) from exc
 
-    try:
-        output = response.json()
-    except ValueError as exc:
-        raise RuntimeError(
-            "Second AI detector returned an invalid response."
-        ) from exc
+    ai_probability = None
+    real_probability = None
+    raw_scores = {}
 
-    if not response.ok:
-        detail = output.get("detail") or output.get("message")
+    for item in output:
+        if isinstance(item, dict):
+            label = str(item.get("label", "")).strip().lower()
+            score = float(item.get("score", 0.0))
+        else:
+            label = str(getattr(item, "label", "")).strip().lower()
+            score = float(getattr(item, "score", 0.0))
+
+        raw_scores[label] = score
+
+        if any(word in label for word in ("fake", "ai", "artificial", "generated")):
+            ai_probability = score if ai_probability is None else max(ai_probability, score)
+
+        if any(word in label for word in ("real", "human", "authentic")):
+            real_probability = score if real_probability is None else max(real_probability, score)
+
+    if ai_probability is None and real_probability is not None:
+        ai_probability = 1.0 - real_probability
+
+    if ai_probability is None:
         raise RuntimeError(
-            f"Second AI detector error: "
-            f"{detail or f'HTTP {response.status_code}'}"
+            f"Hugging Face detector returned labels that could not be mapped: "
+            f"{list(raw_scores.keys())}"
         )
 
-    label = str(output.get("predicted_label", "")).strip().lower()
-
-    try:
-        label_confidence = float(output["probability"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise RuntimeError(
-            "Second AI detector response did not contain a probability score."
-        ) from exc
-
-    label_confidence = min(max(label_confidence, 0.0), 1.0)
-
-    if label == "ai":
-        ai_probability = label_confidence
-    elif label == "human":
-        ai_probability = 1.0 - label_confidence
-    else:
-        raise RuntimeError(
-            f"Second AI detector returned an unknown label: {label or 'empty'}"
-        )
+    ai_probability = min(max(float(ai_probability), 0.0), 1.0)
 
     return {
         "probability": ai_probability,
-        "source": "IsItAI",
-        "predicted_label": output.get("predicted_label"),
-        "label_confidence": label_confidence,
-        "potential_method": output.get("potential_method"),
-        "method_probability": output.get("method_probability"),
+        "source": "Hugging Face dima806/ai_vs_real_image_detection",
+        "raw_scores": raw_scores,
     }
 
 
 def combine_detector_scores(
     sightengine_probability: float,
-    isitai_probability: float,
+    huggingface_probability: float,
 ) -> float:
     """
     Equal-weight ensemble.
@@ -285,7 +202,7 @@ def combine_detector_scores(
     We do NOT remap 0.1% to an invented middle value. The middle scores come
     naturally when two independent models disagree or have different confidence.
     """
-    combined = (sightengine_probability + isitai_probability) / 2.0
+    combined = (sightengine_probability + huggingface_probability) / 2.0
     return min(max(combined, 0.0), 1.0)
 
 def verdict_for(prob: float) -> str:
@@ -317,7 +234,7 @@ async def analyze(file: UploadFile = File(...)):
 
     image_bytes = await file.read()
     if len(image_bytes) > MAX_BYTES:
-        raise HTTPException(status_code=413, detail="Image exceeds the 5 MB limit.")
+        raise HTTPException(status_code=413, detail="Image exceeds the 12 MB limit.")
 
     try:
         Image.open(io.BytesIO(image_bytes)).verify()
@@ -330,26 +247,24 @@ async def analyze(file: UploadFile = File(...)):
             file.filename or "upload.jpg",
             content_type,
         )
-        isitai = ai_score_from_isitai(
+        huggingface = ai_score_from_huggingface(
             image_bytes,
-            file.filename or "upload.jpg",
-            content_type,
         )
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
     sightengine_probability = float(sightengine["probability"])
-    isitai_probability = float(isitai["probability"])
+    huggingface_probability = float(huggingface["probability"])
 
     probability = combine_detector_scores(
         sightengine_probability,
-        isitai_probability,
+        huggingface_probability,
     )
 
     pct = probability * 100.0
     sightengine_pct = sightengine_probability * 100.0
-    isitai_pct = isitai_probability * 100.0
-    disagreement = abs(sightengine_probability - isitai_probability)
+    huggingface_pct = huggingface_probability * 100.0
+    disagreement = abs(sightengine_probability - huggingface_probability)
 
     if probability >= 1.0:
         explanation = (
@@ -370,7 +285,7 @@ async def analyze(file: UploadFile = File(...)):
 
     explanation += (
         f" Detector signals: Sightengine {sightengine_pct:.1f}% AI, "
-        f"IsItAI {isitai_pct:.1f}% AI."
+        f"Hugging Face {huggingface_pct:.1f}% AI."
     )
 
     if disagreement >= 0.40:
@@ -384,13 +299,6 @@ async def analyze(file: UploadFile = File(...)):
         sightengine.get("likely_generator_score") or 0
     )
 
-    potential_method = isitai.get("potential_method")
-    try:
-        potential_method_score = float(
-            isitai.get("method_probability") or 0
-        )
-    except (TypeError, ValueError):
-        potential_method_score = 0.0
 
     generator_notes = []
 
@@ -400,11 +308,6 @@ async def analyze(file: UploadFile = File(...)):
             f"{likely_generator_score * 100:.1f}%"
         )
 
-    if potential_method and potential_method_score >= 0.40:
-        generator_notes.append(
-            f"{str(potential_method).replace('_', ' ').title()} "
-            f"{potential_method_score * 100:.1f}%"
-        )
 
     if generator_notes:
         explanation += (
@@ -420,8 +323,8 @@ async def analyze(file: UploadFile = File(...)):
             "sightengine_ai_percentage": round(
                 sightengine_probability * 100.0, 3
             ),
-            "isitai_ai_percentage": round(
-                isitai_probability * 100.0, 3
+            "huggingface_ai_percentage": round(
+                huggingface_probability * 100.0, 3
             ),
         },
         "stores_upload": False,

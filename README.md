@@ -208,14 +208,42 @@ Because IsItAI documents a 5 MB file-upload limit, V5 uses a 5 MB maximum image
 size so both detectors receive the same uploaded image.
 
 
-## V5.1 — IsItAI authentication compatibility fix
+## V5.2 — replaced IsItAI with Hugging Face
 
-This update fixes the `value is not a valid dict` authentication error by trying
-both JSON and form-encoded login bodies automatically.
+The IsItAI login integration was removed because the live login endpoint was
+returning a request-body validation error even when using the documented format.
 
-No environment variable names changed:
+V5.2 now uses:
 
-- SIGHTENGINE_API_USER
-- SIGHTENGINE_API_SECRET
-- ISITAI_EMAIL
-- ISITAI_API_SECRET
+1. Sightengine
+2. Hugging Face model: `dima806/ai_vs_real_image_detection`
+
+The final score is still an equal-weight average of the two independent AI
+probabilities.
+
+### Render environment variables
+
+Keep:
+
+```text
+SIGHTENGINE_API_USER
+SIGHTENGINE_API_SECRET
+```
+
+Remove or ignore:
+
+```text
+ISITAI_EMAIL
+ISITAI_API_SECRET
+```
+
+Add:
+
+```text
+HF_TOKEN
+```
+
+Create the Hugging Face token in your Hugging Face account settings. The token
+needs permission to use Inference Providers.
+
+Do not commit HF_TOKEN to GitHub.
