@@ -19,63 +19,98 @@ def home():
     with open("static/index.html", "r", encoding="utf-8") as f:
         return f.read()
 
-def ai_score_from_huggingface(image_bytes: bytes) -> Dict[str, Any]:
+def ai_score_from_sightengine(
+    image_bytes: bytes,
+    filename: str,
+    content_type: str
+) -> Dict[str, Any]:
     """
-    Uses Hugging Face Inference API if configured.
+    Uses Sightengine's AI-generated image detection endpoint.
 
-    Set:
-      HF_API_TOKEN=...
-      HF_MODEL_ID=<an image-classification model that distinguishes AI vs real>
+    Required environment variables:
+      SIGHTENGINE_API_USER=...
+      SIGHTENGINE_API_SECRET=...
 
-    IMPORTANT:
-    Different models use different label names. Adjust AI_LABELS / REAL_LABELS
-    below to match your chosen detector model.
+    The API returns type.ai_generated as a confidence value from 0 to 1.
+    There is intentionally NO fake 50% fallback. If credentials are missing
+    or the detector fails, the request returns an error instead of inventing
+    a score.
     """
-    token = os.getenv("HF_API_TOKEN")
-    model_id = os.getenv("HF_MODEL_ID")
+    api_user = os.getenv("SIGHTENGINE_API_USER")
+    api_secret = os.getenv("SIGHTENGINE_API_SECRET")
 
-    if not token or not model_id:
-        # Development fallback only. It deliberately returns an uncertain result
-        # instead of pretending to detect AI without a model.
-        return {
-            "probability": 0.50,
-            "source": "fallback",
-            "note": "No AI detector model is configured, so this is a neutral demo score."
-        }
+    if not api_user or not api_secret:
+        raise RuntimeError(
+            "AI detector is not configured. Add SIGHTENGINE_API_USER and "
+            "SIGHTENGINE_API_SECRET to your environment variables."
+        )
 
-    url = f"https://api-inference.huggingface.co/models/{model_id}"
-    headers = {"Authorization": f"Bearer {token}"}
-    r = requests.post(url, headers=headers, data=image_bytes, timeout=45)
-    if not r.ok:
-        raise RuntimeError(f"Detector API error: {r.status_code}")
+    files = {
+        "media": (
+            filename or "upload.jpg",
+            image_bytes,
+            content_type or "application/octet-stream",
+        )
+    }
+    data = {
+        "models": "genai",
+        "api_user": api_user,
+        "api_secret": api_secret,
+    }
 
-    output = r.json()
-    if isinstance(output, list) and output and isinstance(output[0], list):
-        output = output[0]
+    try:
+        response = requests.post(
+            "https://api.sightengine.com/1.0/check.json",
+            files=files,
+            data=data,
+            timeout=45,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(f"AI detector connection failed: {exc}") from exc
 
-    AI_LABELS = {"ai", "artificial", "generated", "fake", "synthetic"}
-    REAL_LABELS = {"real", "human", "photo", "natural"}
+    try:
+        output = response.json()
+    except ValueError as exc:
+        raise RuntimeError("AI detector returned an invalid response.") from exc
 
-    ai_prob = 0.0
-    real_prob = 0.0
+    if not response.ok or output.get("status") != "success":
+        error = output.get("error", {})
+        message = (
+            error.get("message")
+            if isinstance(error, dict)
+            else str(error or "")
+        )
+        raise RuntimeError(
+            f"AI detector error: {message or f'HTTP {response.status_code}'}"
+        )
 
-    for item in output if isinstance(output, list) else []:
-        label = str(item.get("label", "")).lower()
-        score = float(item.get("score", 0))
-        if any(k in label for k in AI_LABELS):
-            ai_prob = max(ai_prob, score)
-        if any(k in label for k in REAL_LABELS):
-            real_prob = max(real_prob, score)
+    try:
+        probability = float(output["type"]["ai_generated"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "AI detector response did not contain an ai_generated score."
+        ) from exc
 
-    if ai_prob == 0 and real_prob > 0:
-        ai_prob = max(0.0, 1.0 - real_prob)
-    if ai_prob == 0 and real_prob == 0:
-        raise RuntimeError("Could not map model labels. Adjust AI_LABELS/REAL_LABELS.")
+    probability = min(max(probability, 0.0), 1.0)
+
+    generator_scores = output.get("type", {}).get("ai_generators", {}) or {}
+    likely_generator = None
+    likely_generator_score = 0.0
+
+    for name, raw_score in generator_scores.items():
+        try:
+            score = float(raw_score)
+        except (TypeError, ValueError):
+            continue
+        if score > likely_generator_score:
+            likely_generator = name
+            likely_generator_score = score
 
     return {
-        "probability": min(max(ai_prob, 0.0), 1.0),
-        "source": model_id,
-        "note": "Probability is produced by the configured image-classification model."
+        "probability": probability,
+        "source": "Sightengine genai",
+        "likely_generator": likely_generator,
+        "likely_generator_score": likely_generator_score,
     }
 
 def web_similar_images(image_bytes: bytes, filename: str) -> List[Dict[str, str]]:
@@ -104,29 +139,24 @@ def web_similar_images(image_bytes: bytes, filename: str) -> List[Dict[str, str]
     """
     return []
 
-def verdict_for(prob: float, web_search_ran: bool, matches_found: bool) -> str:
+def verdict_for(prob: float) -> str:
     """
-    Display logic requested for the UI:
-    - Rounded detector score = 100% -> "AI generated"
-    - 40% to 99% -> "Might be AI generated"
-    - Below 40% + a completed web search with no matches ->
-      "Photo not found on open internet nor generated by AI"
-    - Below 40% + web matches -> "Likely not AI generated"
-    - Below 40% without a configured web-search provider ->
-      "Likely not AI generated"
+    Requested display thresholds, based on the detector's returned score:
+      100%    -> AI generated
+      40-99%  -> Might be AI generated
+      0-39%   -> Image is legit
+
+    The percentage is a detector confidence score, not mathematical proof.
     """
     pct = round(prob * 100)
 
-    if pct == 100:
+    if pct >= 100:
         return "AI generated"
 
     if pct >= 40:
         return "Might be AI generated"
 
-    if web_search_ran and not matches_found:
-        return "Photo not found on open internet nor generated by AI"
-
-    return "Likely not AI generated"
+    return "Image is legit"
 
 
 @app.post("/api/analyze")
@@ -148,7 +178,11 @@ async def analyze(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="The uploaded file is not a valid image.")
 
     try:
-        detector = ai_score_from_huggingface(image_bytes)
+        detector = ai_score_from_sightengine(
+            image_bytes,
+            file.filename or "upload.jpg",
+            content_type,
+        )
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -166,36 +200,37 @@ async def analyze(file: UploadFile = File(...)):
 
     pct = round(probability * 100)
 
-    if pct == 100:
+    if pct >= 100:
         explanation = (
-            "Detector score: 100%. The model returned its maximum AI-generation "
-            "confidence. This is still a model result, not mathematical proof of origin."
+            "AI detector score: 100%. The detector returned its maximum "
+            "AI-generation confidence."
         )
     elif pct >= 40:
         explanation = (
-            f"Detector score: {pct}%. The image has enough AI-like visual signals "
-            "to be flagged as possibly AI generated."
-        )
-    elif web_search_ran and not matches:
-        explanation = (
-            f"Detector score: {pct}%. The detector is below the 40% AI threshold, "
-            "and the configured public-web image search returned no similar matches."
-        )
-    elif matches:
-        explanation = (
-            f"Detector score: {pct}%. The image is below the 40% AI threshold. "
-            "Possible visually similar public-web images were found below."
+            f"AI detector score: {pct}%. The image is above the 40% threshold, "
+            "so it is flagged as possibly AI generated."
         )
     else:
         explanation = (
-            f"Detector score: {pct}%. The image is below the 40% AI threshold. "
-            "Public-web similarity search is not configured yet."
+            f"AI detector score: {pct}%. The image is below the 40% threshold, "
+            "so this site labels it as legit."
+        )
+
+    likely_generator = detector.get("likely_generator")
+    likely_generator_score = float(detector.get("likely_generator_score") or 0)
+
+    if likely_generator and likely_generator_score >= 0.40:
+        pretty_name = likely_generator.replace("_", " ").title()
+        explanation += (
+            f" Strongest generator signal: {pretty_name} "
+            f"({round(likely_generator_score * 100)}%)."
         )
 
     return {
-        "verdict": verdict_for(probability, web_search_ran, bool(matches)),
+        "verdict": verdict_for(probability),
         "ai_probability": probability,
         "explanation": explanation,
+        "detector_source": detector.get("source"),
         "similar_images": matches[:12],
         "web_search_enabled": web_search_ran,
         "stores_upload": False

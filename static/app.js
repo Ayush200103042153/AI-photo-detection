@@ -168,6 +168,9 @@ function renderResult(data) {
     });
   } else {
     noMatches.classList.remove("hidden");
+    noMatches.textContent = data.web_search_enabled
+      ? "No reliable visually similar public-web matches were returned by the configured search provider."
+      : "Open-web similarity search is not configured yet.";
   }
 }
 

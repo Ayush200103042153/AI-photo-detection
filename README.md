@@ -85,3 +85,46 @@ WEB_IMAGE_SEARCH_ENABLED=true
 
 Do not enable that flag until `web_similar_images()` actually performs a search, otherwise
 the site would incorrectly claim that an image was not found online.
+
+
+## V3 — Real detector setup (fixes the permanent 50% result)
+
+The fake 50% fallback has been removed. This version uses Sightengine's `genai`
+image detector and reads its real `type.ai_generated` confidence score.
+
+Result display logic:
+
+- 100% -> `AI generated`
+- 40% through 99% -> `Might be AI generated`
+- Below 40% -> `Image is legit`
+
+### Create detector credentials
+
+Create a Sightengine account and obtain your API user and API secret.
+
+For local PowerShell testing:
+
+```powershell
+$env:SIGHTENGINE_API_USER="YOUR_API_USER"
+$env:SIGHTENGINE_API_SECRET="YOUR_API_SECRET"
+python -m uvicorn main:app --reload
+```
+
+### Add the credentials on Render
+
+Render Dashboard -> your Web Service -> Environment -> Add Environment Variable
+
+Add:
+
+```text
+SIGHTENGINE_API_USER = your API user
+SIGHTENGINE_API_SECRET = your API secret
+```
+
+Save the changes and redeploy.
+
+Never paste the API secret into `main.py`, GitHub, HTML, or JavaScript.
+Keep it only in environment variables.
+
+If these credentials are missing, the site now shows a configuration error instead
+of returning a made-up 50% score.
