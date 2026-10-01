@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Image Detector</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="space" aria-hidden="true">
+    <span class="star s1"></span><span class="star s2"></span><span class="star s3"></span>
+    <span class="star s4"></span><span class="star s5"></span><span class="star s6"></span>
+    <span class="star s7"></span><span class="star s8"></span><span class="star s9"></span>
+    <span class="glow glow-a"></span><span class="glow glow-b"></span>
+  </div>
+
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-orb"></div>
+        <span>ORBITAL VERIFY</span>
+      </div>
+      <span class="status"><i></i> detector online</span>
+    </header>
+
+    <section id="homeView" class="hero">
+      <div class="eyebrow">AI IMAGE ANALYSIS</div>
+      <h1>Is this image<br><span>AI-generated?</span></h1>
+      <p class="sub">
+        Upload one image. We analyze visual signals locally on the server and, when configured,
+        search the open web for visually similar images.
+      </p>
+
+      <div class="panel upload-panel">
+        <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Upload image">
+          <input id="fileInput" type="file" accept="image/*,video/*" hidden />
+          <div class="upload-icon">↥</div>
+          <h2>Drop an image here</h2>
+          <p>or click to browse</p>
+          <small>JPG, PNG, WEBP • one image per scan</small>
+        </div>
+
+        <div id="fileCard" class="file-card hidden">
+          <img id="preview" alt="Selected image preview" />
+          <div class="file-meta">
+            <strong id="fileName"></strong>
+            <span id="fileSize"></span>
+          </div>
+          <button id="removeBtn" class="ghost-btn" type="button">Remove</button>
+        </div>
+
+        <button id="analyzeBtn" class="primary-btn" type="button" disabled>
+          Analyze image
+          <span>→</span>
+        </button>
+
+        <p class="privacy-note">No database. Your upload is processed for this request only.</p>
+      </div>
+    </section>
+
+    <section id="loadingView" class="panel result-panel hidden">
+      <div class="scanner">
+        <div class="scan-orb"></div>
+        <div class="scan-line"></div>
+      </div>
+      <h2>Analyzing image</h2>
+      <p id="loadingText">Inspecting visual signals…</p>
+      <div class="progress"><span id="progressBar"></span></div>
+    </section>
+
+    <section id="resultView" class="hidden">
+      <div class="result-header">
+        <button id="backBtn" class="ghost-btn back-btn" type="button">← Back</button>
+        <div class="eyebrow">ANALYSIS COMPLETE</div>
+      </div>
+
+      <div class="result-grid">
+        <div class="panel verdict-card">
+          <div class="verdict-top">
+            <div>
+              <span class="label">Result</span>
+              <h2 id="verdictText">—</h2>
+            </div>
+            <div class="score-ring" id="scoreRing">
+              <span id="scoreText">0%</span>
+            </div>
+          </div>
+
+          <div class="confidence-row">
+            <span>AI likelihood</span>
+            <strong id="confidenceText">—</strong>
+          </div>
+
+          <p id="reasonText" class="reason"></p>
+
+          <div class="disclaimer">
+            AI-image detection is probabilistic. A high score is not absolute proof of origin.
+          </div>
+        </div>
+
+        <div class="panel image-card">
+          <span class="label">Submitted image</span>
+          <img id="resultPreview" alt="Submitted image" />
+        </div>
+      </div>
+
+      <div class="panel matches-card">
+        <div class="section-head">
+          <div>
+            <span class="label">Open web</span>
+            <h3>Possible similar images</h3>
+          </div>
+          <span id="searchStatus" class="pill">Checking…</span>
+        </div>
+        <div id="matchesGrid" class="matches-grid"></div>
+        <p id="noMatches" class="empty-note hidden">
+          No reliable visually similar public-web matches were returned by the configured search provider.
+        </p>
+      </div>
+
+      <button id="scanAnotherBtn" class="primary-btn bottom-cta" type="button">
+        Scan another image <span>↻</span>
+      </button>
+    </section>
+  </main>
+
+  <footer>Build and designed by Ayush Patel</footer>
+
+  <div id="toast" class="toast hidden" role="alert"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
