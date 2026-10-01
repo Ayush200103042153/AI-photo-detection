@@ -150,7 +150,7 @@ function renderResult(data) {
 
   matchesGrid.innerHTML = "";
   const matches = data.similar_images || [];
-  searchStatus.textContent = data.web_search_enabled ? `${matches.length} found` : "Not configured";
+  searchStatus.textContent = data.web_search_enabled ? (matches.length ? `${matches.length} found` : "No matches") : "Not configured";
 
   if (matches.length) {
     noMatches.classList.add("hidden");
